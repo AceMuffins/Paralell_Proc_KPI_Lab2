@@ -18,7 +18,7 @@ std::uniform_int_distribution<> distrib(5000, 10000);
 випадковий час від 5 до 10 секунд.
 */
 
-size_t task(const size_t id) {
+size_t task() {
     size_t time = distrib(gen);
     std::this_thread::sleep_for(std::chrono::milliseconds(time));
     return time;
@@ -31,10 +31,10 @@ int main()
     pool.initialize(4, true);
     //std::cout << "Starting " << task_count << " tasks." << std::endl;
     for (int i = 0; i < task_count; i++) {
-        size_t id = pool.add_task(task, i);
+        size_t id = pool.add_task(task);
         //std::cout << "Added task " << id << " to the thread pool." << std::endl;
     }
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(std::chrono::seconds(8));
     pool.terminate_now();
     /*
     while(true) {
