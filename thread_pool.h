@@ -53,7 +53,7 @@ private:
 	size_t m_tasks_processed = 0;
 	bool m_initialized = false;
 	bool m_terminated = false;
-	bool DEBUG = false;
+	bool m_debug = false;
 };
 
 bool thread_pool::working() const
@@ -73,8 +73,8 @@ void thread_pool::initialize(const size_t worker_count, bool debug_mode = false)
 	{
 		return;
 	}
-	DEBUG = debug_mode;
-	if (DEBUG == true) {
+	m_debug = debug_mode;
+	if (m_debug == true) {
 		m_print_lock.lock();
 		printf("STR: Initializing %zu workers.\n", worker_count);
 		m_print_lock.unlock();
@@ -109,7 +109,7 @@ void thread_pool::routine()
 			return;
 		}
 		m_task_status[task_id].status = thread_pool::TaskStatus::Status::Working;
-		if (DEBUG == true) {
+		if (m_debug == true) {
 			m_print_lock.lock();
 			auto time_now = std::chrono::system_clock::now();
 			auto elapsed = duration_cast<nanoseconds>(time_now - m_debug_queue_time[task_id]);
@@ -121,7 +121,7 @@ void thread_pool::routine()
 		}
 		m_task_status[task_id].result = task();
 		m_task_status[task_id].status = thread_pool::TaskStatus::Status::Finished;
-		if (DEBUG == true) {
+		if (m_debug == true) {
 			m_print_lock.lock();
 			m_tasks_processed++;
 			printf("END: Task ID %2zu returned %zu.\n", task_id, m_task_status[task_id].result);
@@ -145,7 +145,7 @@ size_t thread_pool::add_task(task_t&& task, arguments&&... parameters)
 	m_avg_read_cnt++;
 	m_avg_queue_len += m_tasks.size();
 	m_task_waiter.notify_one();
-	if (DEBUG == true) {
+	if (m_debug == true) {
 		m_print_lock.lock();
 		printf("ADD: Task ID %2zu was added to the queue.\n", id);
 		m_debug_queue_time[id] = std::chrono::system_clock::now();
@@ -175,7 +175,7 @@ size_t thread_pool::get_status(size_t id)
 
 void thread_pool::terminate()
 {
-	if (DEBUG == true) {
+	if (m_debug == true) {
 		m_print_lock.lock();
 		printf("TRM: Terminate called.\n");
 		m_print_lock.unlock();
@@ -184,7 +184,7 @@ void thread_pool::terminate()
 		write_lock _(m_rw_lock);
 		if (working_unsafe())
 		{
-			if (DEBUG == true) {
+			if (m_debug == true) {
 				m_print_lock.lock();
 				printf("TRM: Waiting for tasks to finish.\n");
 				m_print_lock.unlock();
@@ -193,7 +193,7 @@ void thread_pool::terminate()
 		}
 		else
 		{
-			if (DEBUG == true) {
+			if (m_debug == true) {
 				debug_terminate();
 			}
 			m_workers.clear();
@@ -207,7 +207,7 @@ void thread_pool::terminate()
 	{
 		worker.join();
 	}
-	if (DEBUG == true) {
+	if (m_debug == true) {
 		debug_terminate();
 	}
 	m_workers.clear();
@@ -217,7 +217,7 @@ void thread_pool::terminate()
 
 inline void thread_pool::terminate_now()
 {
-	if (DEBUG == true) {
+	if (m_debug == true) {
 		m_print_lock.lock();
 		printf("TRM: Urgent termination called.\n");
 		printf("TRM: Clearing the task queue.\n");
@@ -228,7 +228,7 @@ inline void thread_pool::terminate_now()
 		m_tasks.clear();
 		if (working_unsafe())
 		{
-			if (DEBUG == true) {
+			if (m_debug == true) {
 				m_print_lock.lock();
 				printf("TRM: Waiting for tasks to finish.\n");
 				m_print_lock.unlock();
