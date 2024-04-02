@@ -31,7 +31,7 @@ public:
 private:
 	mutable read_write_lock m_rw_lock;
 	task_queue_implementation m_tasks;
-	std::queue<size_t> task_id_queue;
+	std::queue<size_t> m_ids;
 	size_t tasks_total = 0;
 };
 
@@ -62,7 +62,7 @@ void task_queue<task_type_t>::clear()
 	while (!m_tasks.empty())
 	{
 		m_tasks.pop();
-		task_id_queue.pop();
+		m_ids.pop();
 	}
 }
 
@@ -77,9 +77,9 @@ bool task_queue<task_type_t>::pop(task_type_t& task, size_t& id)
 	else
 	{
 		task = std::move(m_tasks.front());
-		id = std::move(task_id_queue.front());
+		id = std::move(m_ids.front());
 		m_tasks.pop();
-		task_id_queue.pop();
+		m_ids.pop();
 		return true;
 	}
 }
@@ -91,7 +91,7 @@ size_t task_queue<task_type_t>::emplace(arguments&&... parameters)
 	write_lock _(m_rw_lock);
 	size_t id = tasks_total;
 	m_tasks.emplace(std::forward<arguments>(parameters)...);
-	task_id_queue.push(id);
+	m_ids.push(id);
 	tasks_total++;
 	return id;
 }

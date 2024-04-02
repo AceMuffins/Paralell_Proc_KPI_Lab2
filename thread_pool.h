@@ -41,14 +41,16 @@ private:
 		size_t result = NULL;
 	};
 	mutable read_write_lock m_rw_lock;
-	mutable read_write_lock print_lock;
+	mutable read_write_lock m_print_lock;
 	mutable std::condition_variable_any m_task_waiter;
 	std::vector<std::thread> m_workers;
 	task_queue<std::function<size_t()>> m_tasks;
-	std::unordered_map<size_t, TaskStatus> task_id_status;
-	std::unordered_map<size_t, std::chrono::time_point<std::chrono::system_clock>> debug_queue_time;
-	double queue_wait_time = 0.0;
-	size_t tasks_processed = 0;
+	std::unordered_map<size_t, TaskStatus> m_task_status;
+	std::unordered_map<size_t, std::chrono::time_point<std::chrono::system_clock>> m_debug_queue_time;
+	double m_wait_time = 0.0;
+	int m_avg_queue_len = 0;
+	int m_avg_read_cnt = 0;
+	size_t m_tasks_processed = 0;
 	bool m_initialized = false;
 	bool m_terminated = false;
 	bool DEBUG = false;
@@ -73,9 +75,9 @@ void thread_pool::initialize(const size_t worker_count, bool debug_mode = false)
 	}
 	DEBUG = debug_mode;
 	if (DEBUG == true) {
-		print_lock.lock();
+		m_print_lock.lock();
 		printf("STR: Initializing %zu workers.\n", worker_count);
-		print_lock.unlock();
+		m_print_lock.unlock();
 	}
 	m_workers.reserve(worker_count);
 	for (size_t id = 0; id < worker_count; id++)
@@ -91,11 +93,13 @@ void thread_pool::routine()
 	{
 		bool task_acquired = false;
 		size_t task_id = -1;
+		size_t queue_len = 0;
 		std::function<size_t()> task;
 		{
 			write_lock _(m_rw_lock);
-			auto wait_condition = [this, &task_acquired, &task_id, &task] {
+			auto wait_condition = [this, &task_acquired, &task_id, &task, &queue_len] {
 				task_acquired = m_tasks.pop(task, task_id);
+				queue_len = m_tasks.size();
 				return m_terminated || task_acquired;
 				};
 			m_task_waiter.wait(_, wait_condition);
@@ -104,22 +108,24 @@ void thread_pool::routine()
 		{
 			return;
 		}
-		task_id_status[task_id].status = thread_pool::TaskStatus::Status::Working;
+		m_task_status[task_id].status = thread_pool::TaskStatus::Status::Working;
 		if (DEBUG == true) {
-			print_lock.lock();
+			m_print_lock.lock();
 			auto time_now = std::chrono::system_clock::now();
-			auto elapsed = duration_cast<nanoseconds>(time_now - debug_queue_time[task_id]);
-			queue_wait_time += elapsed.count() * 1e-6;
+			auto elapsed = duration_cast<nanoseconds>(time_now - m_debug_queue_time[task_id]);
+			m_wait_time += elapsed.count() * 1e-6;
+			m_avg_read_cnt++;
+			m_avg_queue_len += queue_len;
 			printf("WRK: Task ID %2zu began working. Queue wait time %.3f miliseconds.\n", task_id, elapsed.count() * 1e-6);
-			print_lock.unlock();
+			m_print_lock.unlock();
 		}
-		task_id_status[task_id].result = task();
-		task_id_status[task_id].status = thread_pool::TaskStatus::Status::Finished;
+		m_task_status[task_id].result = task();
+		m_task_status[task_id].status = thread_pool::TaskStatus::Status::Finished;
 		if (DEBUG == true) {
-			print_lock.lock();
-			tasks_processed++;
-			printf("END: Task ID %2zu returned %zu.\n", task_id, task_id_status[task_id].result);
-			print_lock.unlock();
+			m_print_lock.lock();
+			m_tasks_processed++;
+			printf("END: Task ID %2zu returned %zu.\n", task_id, m_task_status[task_id].result);
+			m_print_lock.unlock();
 		}
 	}
 }
@@ -135,13 +141,15 @@ size_t thread_pool::add_task(task_t&& task, arguments&&... parameters)
 	auto bind = std::bind(std::forward<task_t>(task),
 		std::forward<arguments>(parameters)...);
 	size_t id = m_tasks.emplace(bind);
-	task_id_status[id].status = thread_pool::TaskStatus::Status::Waiting;
+	m_task_status[id].status = thread_pool::TaskStatus::Status::Waiting;
+	m_avg_read_cnt++;
+	m_avg_queue_len += m_tasks.size();
 	m_task_waiter.notify_one();
 	if (DEBUG == true) {
-		print_lock.lock();
+		m_print_lock.lock();
 		printf("ADD: Task ID %2zu was added to the queue.\n", id);
-		debug_queue_time[id] = std::chrono::system_clock::now();
-		print_lock.unlock();
+		m_debug_queue_time[id] = std::chrono::system_clock::now();
+		m_print_lock.unlock();
 	}
 	return id;
 }
@@ -149,11 +157,11 @@ size_t thread_pool::add_task(task_t&& task, arguments&&... parameters)
 
 size_t thread_pool::get_status(size_t id)
 {
-	if (task_id_status.count(id) == 0) {
+	if (m_task_status.count(id) == 0) {
 		std::cout << "No such task exists." << std::endl;
 		return 0;
 	}
-	auto task_status = task_id_status.at(id);
+	auto task_status = m_task_status.at(id);
 	if (task_status.status == thread_pool::TaskStatus::Status::Waiting) {
 		std::cout << "Task " << id << " is in the task queue." << std::endl;
 	}
@@ -168,18 +176,18 @@ size_t thread_pool::get_status(size_t id)
 void thread_pool::terminate()
 {
 	if (DEBUG == true) {
-		print_lock.lock();
+		m_print_lock.lock();
 		printf("TRM: Terminate called.\n");
-		print_lock.unlock();
+		m_print_lock.unlock();
 	}
 	{
 		write_lock _(m_rw_lock);
 		if (working_unsafe())
 		{
 			if (DEBUG == true) {
-				print_lock.lock();
+				m_print_lock.lock();
 				printf("TRM: Waiting for tasks to finish.\n");
-				print_lock.unlock();
+				m_print_lock.unlock();
 			}
 			m_terminated = true;
 		}
@@ -210,10 +218,10 @@ void thread_pool::terminate()
 inline void thread_pool::terminate_now()
 {
 	if (DEBUG == true) {
-		print_lock.lock();
+		m_print_lock.lock();
 		printf("TRM: Urgent termination called.\n");
 		printf("TRM: Clearing the task queue.\n");
-		print_lock.unlock();
+		m_print_lock.unlock();
 	}
 	{
 		write_lock _(m_rw_lock);
@@ -221,9 +229,9 @@ inline void thread_pool::terminate_now()
 		if (working_unsafe())
 		{
 			if (DEBUG == true) {
-				print_lock.lock();
+				m_print_lock.lock();
 				printf("TRM: Waiting for tasks to finish.\n");
-				print_lock.unlock();
+				m_print_lock.unlock();
 			}
 			m_terminated = true;
 		}
@@ -246,14 +254,15 @@ inline void thread_pool::terminate_now()
 }
 
 void thread_pool::debug_terminate() {
-	print_lock.lock();
+	m_print_lock.lock();
 
 	printf("TRM: No tasks left, terminating.\n\n");
 	printf("====DEBUG INFO====\n");
 	printf("Tasks added: %zu\n", m_tasks.task_count());
-	printf("Tasks processed: %zu\n", tasks_processed);
-	printf("Total queue wait time: %.3f ms\n", queue_wait_time);
-	printf("Average queue wait time: %.3f ms\n", queue_wait_time / tasks_processed);
+	printf("Tasks processed: %zu\n", m_tasks_processed);
+	printf("Total queue wait time: %.3f ms\n", m_wait_time);
+	printf("Average queue wait time: %.3f ms\n", m_wait_time / m_tasks_processed);
+	printf("Average queue length: %.3f tasks\n", (double)m_avg_queue_len / (double)m_avg_read_cnt);
 
-	print_lock.unlock();
+	m_print_lock.unlock();
 }
